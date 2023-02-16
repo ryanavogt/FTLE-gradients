@@ -289,7 +289,7 @@ def FTLE(*params, model, k_LE=100000, rec_layer= 0, kappa = 10, diff= 10, warmup
 			if cells:
 				ht, ct = states
 			else: ht = states
-			ht = ht.transpose(0,1)
+			# ht = ht.transpose(0,1)
 			ht_list.append(ht)
 			xt_list.append(xt)
 			# print(f'ht output shape {ht.shape}')

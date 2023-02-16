@@ -6,6 +6,7 @@ from models import *
 from tqdm import tqdm
 from training import *
 import time
+import imageio
 
 
 def main(input_seq_length=784, train=True):
@@ -16,29 +17,32 @@ def main(input_seq_length=784, train=True):
     max_epoch = 10
     learning_rate = 0.002
     dropout = 0.1
-    hidden_size = 16
+    hidden_size = 128
     save_interval = 1
     in_epoch_saves = 4
-    max_sub_epoch = 2
+    max_sub_epoch = 0
     fix_W = False
-    load_LE = True
+    load_LE = False
     train = False
-    lyap = False
-    grads = False
+    lyap = True
+    grads = True
     flat_grads = False
     r_plot = True
 
     # params = torch.linspace(0.005, end= 0.025, steps = 2)
-    params = [0.001, 0.005, 0.025, 0.05, 0.25, 0.5]
-    model_type = 'rnn'
+    # params = [0.001, 0.005, 0.025, 0.05, 0.25, 0.5]
+    params = [0.001, 0.005]
     p = 0.005
+    model_type = 'rnn'
+    id_init_params = {'asrnn': 'b', 'rnn': 'std'}
+    init_params = {'asrnn': {'a': -p, 'b': p}, 'rnn': {'mean': 0, 'std': p}}
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     dcon = DataConfig('../Dataset/', batch_size=batch_size, input_seq_length=input_seq_length, input_size=input_size,
                       target_seq_length=1, val_frac=0.2, test_frac=0, name_params={'insize': input_size})
     mcon = ModelConfig(model_type, 1, hidden_size, dcon.input_size, output_size=output_size, dropout=dropout,
-                       init_type='normal', init_params={'mean': 0, 'std': p},
-                       device=device, bias=False, id_init_param='std')
+                       init_type='normal', init_params=init_params[model_type],
+                       device=device, bias=False, id_init_param=id_init_params[model_type])
     tcon = TrainConfig(model_dir='SMNIST/Models', batch_size=batch_size, max_epoch=max_epoch,
                        optimizer='sgd', learning_rate=learning_rate)
     fcon = FullConfig(dcon, tcon, mcon)
@@ -55,13 +59,14 @@ def main(input_seq_length=784, train=True):
     val_dl = torch.utils.data.DataLoader(fcon.data.datasets['val_set'],
                                          batch_size=le_batch_size)
     if load_LE:
-        le_input, le_target = torch.load('SMNIST/le_setup.p')
+        le_input, le_target = torch.load(f'SMNIST/le_setup_seq{input_seq_length}.p')
     else:
         le_input, le_target = next(iter(val_dl))
         le_input = le_input.to(fcon.device).squeeze(1)
-        torch.save((le_input, le_target), 'SMNIST/le_setup.p')
+        torch.save((le_input, le_target), f'SMNIST/le_setup_seq{input_seq_length}.p')
     le_target = le_target.to(fcon.device)
     print(f'LE target: {le_target[:20]}')
+    le_input = le_input.to(fcon.device)
     model = RNNModel(fcon.model).to(fcon.device)
     if fix_W:
         optimizer = fcon.train.get_optimizer(model.rnn_layer.parameters())
@@ -81,12 +86,15 @@ def main(input_seq_length=784, train=True):
             p = float(int(p * 1000)) * 1.0 / 1000
             params[i] = p
             print(f"Init Parameter: {p}")
-            fcon.model.init_params = {'mean': 0, 'std': p}
+            if model_type == 'asrnn':
+                fcon.model.init_params = {'a': -p, 'b': p}
+            else:
+                fcon.model.init_params = {'mean': 0, 'std': p}
             model = RNNModel(fcon.model).to(fcon.device)
             optimizer = fcon.train.get_optimizer(model.parameters())
             train_loss, val_loss, accuracy = train_model(fcon, model, optimizer, verbose=True,
                                                          save_interval=save_interval, in_epoch_saves=in_epoch_saves,
-                                                         max_sub_epoch=max_sub_epoch, overwrite=True, reg=True)
+                                                         max_sub_epoch=max_sub_epoch, overwrite=True, reg=False)
             end_time = time.time()
             time_diff = end_time - start_time
             remaining_time = (len(params) - (i + 1)) * time_diff
@@ -103,7 +111,7 @@ def main(input_seq_length=784, train=True):
             print(f"p = {p}")
             for epoch in range(0, max_epoch + 1, save_interval):
                 print(f"Calculating FTLEs for epoch {epoch}")
-                fcon.model.init_params['std'] = p
+                fcon.model.init_params[id_init_params[model_type]] = p
                 for it in range(in_epoch_saves + 1):
                     if it == in_epoch_saves:
                         model, optimizer, _, _ = load_checkpoint(fcon, epoch)
@@ -139,16 +147,20 @@ def main(input_seq_length=784, train=True):
                         model.train()
                         for t in tqdm(torch.arange(1, input_seq_length + 1)):
                             preds, _ = model(le_input[:, :t], h_le)
-                            loss = criterion(preds, le_target)
+                            loss = criterion(preds[:, -1], le_target)
                             loss_list[t - 1] = loss.detach()
-                            pred_list[t - 1] = preds.detach()
+                            pred_list[t - 1] = preds[:, -1].detach()
                             for i in range(le_batch_size):
                                 optimizer.zero_grad()
                                 loss[i].backward(retain_graph=True)
                                 for layer, name in zip(model.rnn_layer.parameters(), layer_names):
                                     grad_dict[name] = layer.grad
-                                gradV_list[t - 1, i] = grad_dict['U']
-                                gradU_list[t - 1, i] = grad_dict['W']
+                                if model_type == 'asrnn':
+                                    gradV_list[t - 1, i] = grad_dict['W']
+                                    gradU_list[t - 1, i] = grad_dict['U']
+                                else:
+                                    gradV_list[t - 1, i] = grad_dict['U']
+                                    gradU_list[t - 1, i] = grad_dict['W']
                                 # temp = model.fc.parameters()[0].grad
                                 # print(temp.shape)
                                 gradW_list[t - 1, i] = model.fc.weight.grad.t()
@@ -223,40 +235,92 @@ def main(input_seq_length=784, train=True):
                                f'SMNIST/Grads/{fcon.name()}_e{epoch}{suffix}_Fullgrads.p')
 
     if r_plot:
-        p = 0.005
-        fcon.model.init_params['std'] = p
-        suffix = ''
-        epoch = max_epoch
-        ftle_dict = torch.load(f'SMNIST/LEs/{fcon.name()}_e{epoch}{suffix}_FTLE.p', map_location=device)
-        pred_list = torch.load(f'SMNIST/Grads/{fcon.name()}_e{epoch}{suffix}_logits.p', map_location=device)
-        plt.figure()
-        plt.plot(pred_list[:, 0].softmax(dim=-1)[:, le_target[0]])
-        plt.xlabel('t')
-        plt.ylabel('Correct Logit')
-        plt.savefig(f'SMNIST/Plots/p{p}/logits_plot.png', bbox_inches='tight')
-        r_vals = ftle_dict['rvals']
-        r_diag = torch.diagonal(r_vals[0], dim1=-2, dim2=-1)
-        plt.figure()
-        x = torch.arange(r_vals.shape[1])
-        plt.plot(x, torch.log(r_diag.sum(dim=-1)), label='Rvals')
-        plt.xlabel('t')
-        plt.ylabel('Sum of Rvals')
-        plt.title(f'R value evolution over time for RNN, p = {p}\nSequence Length = {input_seq_length}')
-        plt.savefig(f'SMNIST/Plots/p{p}/rvals_plot.png', bbox_inches='tight')
+        torch.manual_seed(31)
+        for p in params:
+            plot_dir = f'SMNIST/Plots/p{p}'
+            if not os.path.exists(plot_dir):
+                os.mkdir(plot_dir)
+            if model_type == 'asrnn':
+                fcon.model.init_params = {'a': -p, 'b': p}
+            else:
+                fcon.model.init_params = {'mean': 0, 'std': p}
+            model, optimizer, _, _ = load_checkpoint(fcon, max_epoch)
+            suffix = ''
+            epoch = model.best_epoch
+            print(f'Best Epoch: {epoch}')
+            print(f'Best Loss: {model.best_loss}')
+            ftle_dict = torch.load(f'SMNIST/LEs/{fcon.name()}_e{epoch}{suffix}_FTLE.p', map_location=device)
+            pred_list = torch.load(f'SMNIST/Grads/{fcon.name()}_e{epoch}{suffix}_logits.p', map_location=device)
+            # pred_logits = pred_list.softmax(dim=-1)
+            best_idx = torch.argmin(criterion(pred_list[-1], le_target))
+            plt.figure()
+            plt.pcolor(le_input.cpu()[best_idx].reshape((28,28)))
+            plt.gca().invert_yaxis()
+            plt.title(f'Input for {model_type}, p={p}')
+            plt.savefig(f'{plot_dir}/input_plot_{model_type}_h{hidden_size}_len{input_seq_length}.png', bbox_inches='tight')
 
-        gradV_list, gradU_list, gradW_list, loss_list = torch.load(
-            f'SMNIST/Grads/{fcon.name()}_e{epoch}{suffix}_grads.p', map_location=device)
+            plt.figure(figsize = (4,1))
+            plt.pcolor(le_input.cpu()[best_idx].T)
+            plt.gca().invert_yaxis()
+            plt.savefig(f'{plot_dir}/input_plot_sequence_{model_type}_h{hidden_size}_len{input_seq_length}.png', bbox_inches='tight')
+            plt.figure()
+            plt.plot(pred_list[-1, best_idx].softmax(dim=-1).cpu())
+            plt.xlabel('Label')
+            plt.ylabel('Logit')
+            plt.title(f'Class Logits for {model_type}, p={p}, seq len = {input_seq_length}\n Correct label: {le_target[best_idx]}')
+            plt.savefig(f'{plot_dir}/classLogits_{model_type}_h{hidden_size}_len{input_seq_length}.png',
+                        bbox_inches='tight')
+            plt.close()
 
-        # plt.figure()
-        plt.plot(x, torch.log(torch.linalg.norm(gradV_list[:, 0], dim=(-2, -1))), label='GradV Norm')
-        # plt.scatter(x, torch.linalg.norm(gradU_list[:, 0], dim=(-2, -1)), label='GradU Norm')
-        # plt.scatter(x, torch.linalg.norm(gradW_list[:, 0], dim=(-2, -1)), label='GradW Norm')
-        plt.legend()
-        plt.ylabel('LogNorm')
-        plt.xlabel('t')
-        plt.title(f'Gradient Component Norms over time, p = {p}\nSequence Length = {input_seq_length}')
-        plt.savefig(f'SMNIST/Plots/p{p}/gradnorms_plot.png', bbox_inches='tight')
+            gradV_list, gradU_list, gradW_list, loss_list = torch.load(
+                f'SMNIST/Grads/{fcon.name()}_e{epoch}{suffix}_grads.p', map_location=device)
+            filenames = []
 
+            plt.figure()
+            plt.plot(pred_list[:, best_idx].cpu().softmax(dim=-1)[:, le_target[best_idx]])
+            plt.xlabel('t')
+            plt.ylabel('Correct Logit')
+            plt.savefig(f'{plot_dir}/logits_plot_{model_type}_h{hidden_size}_len{input_seq_length}.png',
+                        bbox_inches='tight')
+            plt.close()
+
+            r_vals = ftle_dict['rvals']
+            r_diag = torch.diagonal(r_vals[best_idx], dim1=-2, dim2=-1).cpu()
+            ns = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20]
+            n = ns[-1]
+            plot_min = torch.log(r_diag[:, :n].cumsum(dim=-1).min())
+            plot_max = torch.log(r_diag[:, :n].cumsum(dim=-1).max())
+            for first_n in ns:
+                plt.figure()
+                x = torch.arange(r_vals.shape[1])
+                plt.plot(x, torch.log(r_diag[:, :first_n].sum(dim=-1)), label='Rvals')
+                plt.xlabel('t')
+                plt.ylabel(f'Sum of first {first_n} Rvals')
+                plt.title(f'R value evolution over time for RNN, p = {p}\nSequence Length = {input_seq_length}, First {first_n}')
+                if model_type == 'rnn':
+                    plt.ylim([plot_min, plot_max])
+                fig_filename = f'SMNIST/Plots/p{p}/rvals_plot_{model_type}_h{hidden_size}_len{input_seq_length}_n{first_n}.png'
+                filenames.append(fig_filename)
+                plt.savefig(fig_filename, bbox_inches='tight')
+                # plt.figure()
+                plt.plot(x, torch.log(torch.linalg.norm(gradV_list[:, 0], dim=(-2, -1))).cpu(), label='GradV Norm')
+                # plt.scatter(x, torch.linalg.norm(gradU_list[:, 0], dim=(-2, -1)), label='GradU Norm')
+                # plt.scatter(x, torch.linalg.norm(gradW_list[:, 0], dim=(-2, -1)), label='GradW Norm')
+                plt.legend()
+                plt.ylabel('LogNorm')
+                plt.xlabel('t')
+                plt.title(f'Gradient Component Norms over time, p = {p}\nSequence Length = {input_seq_length}, First {first_n}')
+                plt.savefig(f'SMNIST/Plots/p{p}/gradnorms_plot_{model_type}_h{hidden_size}_len{input_seq_length}_n{first_n}.png', bbox_inches='tight')
+                plt.close()
+
+            with imageio.get_writer(
+                    f'SMNIST/Plots/p{p}/rvals_vid_{model_type}_h{hidden_size}_len{input_seq_length}.gif',
+                    mode='I', fps=4) as writer:
+                for filename in filenames:
+                    image = imageio.imread(filename)
+                    writer.append_data(image)
+            # for filename in set(filenames):
+            #     os.remove(filename)
 
 if __name__ == '__main__':
     main(112, False)
