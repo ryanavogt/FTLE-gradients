@@ -9,40 +9,43 @@ import time
 import imageio
 
 
-def main(input_seq_length=784, train=True):
+def main(input_seq_length=784, train=True, optimizer='sgd', optimizer_dict={'momentum':0}):
     input_size = 784 // input_seq_length
     batch_size = 128
     le_batch_size = 25
     output_size = 10
     max_epoch = 10
-    learning_rate = 0.002
+    learning_rate = 0.001
     dropout = 0.1
     hidden_size = 128
     save_interval = 1
     in_epoch_saves = 4
-    max_sub_epoch = 0
+    max_sub_epoch = 1
     fix_W = False
     load_LE = False
-    train = False
+    train = True
     lyap = True
     grads = True
     flat_grads = False
-    r_plot = True
+    r_plot = False
 
     # params = torch.linspace(0.005, end= 0.025, steps = 2)
     # params = [0.001, 0.005, 0.025, 0.05, 0.25, 0.5]
-    params = [0.001, 0.005]
+    params = [0.005]
     p = 0.005
     model_type = 'rnn'
-    id_init_params = {'asrnn': 'b', 'rnn': 'std'}
-    init_params = {'asrnn': {'a': -p, 'b': p}, 'rnn': {'mean': 0, 'std': p}}
+    nonlinearity = 'tanh'
+    id_init_params = {'asrnn': 'b', 'rnn': 'gain'}
+    init_type = 'xav_normal'
+    init_param = {'gain': 1}
+    # init_params = {'asrnn': {'a': -p, 'b': p}, 'rnn': {'mean': 0, 'std': p}}
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     dcon = DataConfig('../Dataset/', batch_size=batch_size, input_seq_length=input_seq_length, input_size=input_size,
                       target_seq_length=1, val_frac=0.2, test_frac=0, name_params={'insize': input_size})
     mcon = ModelConfig(model_type, 1, hidden_size, dcon.input_size, output_size=output_size, dropout=dropout,
-                       init_type='normal', init_params=init_params[model_type],
-                       device=device, bias=False, id_init_param=id_init_params[model_type])
+                       init_type=init_type, init_params=init_param,
+                       device=device, bias=False, id_init_param=id_init_params[model_type], nonlinearity=nonlinearity)
     tcon = TrainConfig(model_dir='SMNIST/Models', batch_size=batch_size, max_epoch=max_epoch,
                        optimizer='sgd', learning_rate=learning_rate)
     fcon = FullConfig(dcon, tcon, mcon)
@@ -88,6 +91,8 @@ def main(input_seq_length=784, train=True):
             print(f"Init Parameter: {p}")
             if model_type == 'asrnn':
                 fcon.model.init_params = {'a': -p, 'b': p}
+            elif init_type == 'xav_normal':
+                fcon.model.init_params = {'gain': p}
             else:
                 fcon.model.init_params = {'mean': 0, 'std': p}
             model = RNNModel(fcon.model).to(fcon.device)
@@ -286,16 +291,16 @@ def main(input_seq_length=784, train=True):
 
             r_vals = ftle_dict['rvals']
             r_diag = torch.diagonal(r_vals[best_idx], dim1=-2, dim2=-1).cpu()
-            ns = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20]
+            ns = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
             n = ns[-1]
-            plot_min = torch.log(r_diag[:, :n].cumsum(dim=-1).min())
-            plot_max = torch.log(r_diag[:, :n].cumsum(dim=-1).max())
+            plot_min = (torch.log(r_diag[:, :n]).cumsum(dim=-1)/torch.arange(1, n+1)).min()
+            plot_max = (torch.log(r_diag[:, :n]).cumsum(dim=-1)/torch.arange(1, n+1)).max()
             for first_n in ns:
                 plt.figure()
                 x = torch.arange(r_vals.shape[1])
-                plt.plot(x, torch.log(r_diag[:, :first_n].sum(dim=-1)), label='Rvals')
+                plt.plot(x, torch.log(r_diag[:, :first_n]).mean(dim=-1), label='Rvals')
                 plt.xlabel('t')
-                plt.ylabel(f'Sum of first {first_n} Rvals')
+                plt.ylabel(f'Sum of first {first_n} Rval logs')
                 plt.title(f'R value evolution over time for RNN, p = {p}\nSequence Length = {input_seq_length}, First {first_n}')
                 if model_type == 'rnn':
                     plt.ylim([plot_min, plot_max])
@@ -319,12 +324,13 @@ def main(input_seq_length=784, train=True):
                 for filename in filenames:
                     image = imageio.imread(filename)
                     writer.append_data(image)
+                    os.remove(filename)
             # for filename in set(filenames):
             #     os.remove(filename)
 
 if __name__ == '__main__':
-    main(112, False)
-
+    # main(28, False, optimizer='rmsProp', optimizer_dict={'alpha':0.9})
+    main(28, False)
 
 def part_equal(n, splits):
     size = (n * 1.0) / (splits + 1)

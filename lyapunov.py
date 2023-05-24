@@ -171,7 +171,8 @@ def calc_LEs_an(*params, model, k_LE=100000, rec_layer= 0, kappa = 10, diff= 10,
 	#     print(torch.log2(rvals.detach()).shape)
 	return LEs, rvals#, qvect
 	
-def FTLE(*params, model, k_LE=100000, rec_layer= 0, kappa = 10, diff= 10, warmup = 10, T_ons = 1, save_s = False):
+def FTLE(*params, model, k_LE=100000, rec_layer= 0, kappa = 10, diff= 10, warmup = 10, T_ons = 1, save_s = False,
+		 bias = False):
 	'''
 	Calculates the FTLE of an RNN. Found by taking expansion factor at each time step and calculating each LE.
 	Inputs:
@@ -184,7 +185,7 @@ def FTLE(*params, model, k_LE=100000, rec_layer= 0, kappa = 10, diff= 10, warmup
 		device = torch.device('cuda')
 	else:
 		device = torch.device('cpu')
-	bias = model.rnn_layer.bias
+	# bias = model.rnn_layer.bias
 	cells = False #determine whether to track cell states (for LSTM)
 	x_in = Variable(params[0], requires_grad = False).to(device)
 	hc = params[1]

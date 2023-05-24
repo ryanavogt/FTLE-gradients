@@ -29,8 +29,8 @@ if __name__ == '__main__':
     batch_size = 128
     le_batch_size = 25
     output_size = 10
-    max_epoch = 10
-    learning_rate = 0.002
+    max_epoch = 6
+    learning_rate = 0.001
     dropout = 0.1
     hidden_size = 128
     save_interval = 1
@@ -38,13 +38,13 @@ if __name__ == '__main__':
     p = 0.001
     seq_length = 28
     input_size = 28
-    max_sub_epoch = 2
+    max_sub_epoch = 0
     in_epoch_saves = 4
 
     #Tasks
     gif = False
     eigs = False
-    svds = False
+    svds = True
     svd_projections = True
     conditional = False
     corr = False
@@ -54,13 +54,20 @@ if __name__ == '__main__':
     dims = False
     ftle = False
     train_loss_plot = False
-    le_mode = 'Last'
-    plot_proj =False
-    svd_mode = 'First'
+    le_mode = 'Random'
+    plot_proj = True
+    svd_mode = 'Last'
     w_change = False
 
     qs = 10
     evs = 5
+
+    init_type = 'xav_normal'
+    init_param = {'gain': 1}
+    id_init_params = {'asrnn': 'b', 'rnn': 'gain'}
+    nonlinearity = 'tanh'
+
+
 
     print('Configs')
     params = torch.linspace(0.005, end= 0.025, steps = 5)
@@ -69,11 +76,11 @@ if __name__ == '__main__':
     dcon = DataConfig('../Dataset/', input_size = input_size, batch_size= batch_size, input_seq_length = seq_length, 
                                                 target_seq_length = 1, val_frac = 0.2, 
                                                 test_frac = 0, name_params = {'insize':input_size})
-    mcon = ModelConfig(model_type, 1, hidden_size, dcon.input_size, output_size = output_size, dropout=dropout, 
-                        init_type = 'normal', init_params = {'mean':0, 'std':p},
-                        device = device, bias = False, id_init_param = 'std')                                            
+    mcon = ModelConfig(model_type, 1, hidden_size, dcon.input_size, output_size=output_size, dropout=dropout,
+                       init_type=init_type, init_params=init_param,
+                       device=device, bias=False, id_init_param=id_init_params[model_type], nonlinearity=nonlinearity)
     tcon = TrainConfig(model_dir = 'SMNIST/Models', batch_size = batch_size, max_epoch = max_epoch, 
-                                                        optimizer = 'adam', learning_rate = learning_rate)
+                                                        optimizer = 'sgd', learning_rate = learning_rate)
     fcon = FullConfig(dcon, tcon, mcon)
 
     print('Dataloader')
@@ -86,7 +93,7 @@ if __name__ == '__main__':
         save_idcs = []
     
     model = RNNModel(mcon)
-    ckpt = load_checkpoint(fcon, load_epoch = 0)
+    ckpt = load_checkpoint(fcon, load_epoch = 0, overwrite=True)
     model = ckpt[0]
     weightW_list = [model.fc.weight]
     weightW_diff = []
@@ -95,19 +102,27 @@ if __name__ == '__main__':
     
     print('Loop')
     ymax = 0
-    inds = torch.randperm(hidden_size)
+    inds = torch.randperm(hidden_size-2*evs)+evs
     all_stds = []
+    # epochs = range(0, max_epoch+1, save_interval)
+    epochs = [0, 5]
     for p in params[:1]:
         p = float(int(p*1000))*1.0/1000
-        fcon.model.init_params['std'] = p
+        if model_type == 'asrnn':
+            fcon.model.init_params = {'a': -p, 'b': p}
+        elif init_type == 'xav_normal':
+            fcon.model.init_params = {'gain': p}
+        else:
+            fcon.model.init_params = {'mean': 0, 'std': p}
+        # fcon.model.init_params['std'] = p
         print(f'Parameter = {p}')
         pearcs = []
         pearcs1 = []
-        for epoch in range(0, max_epoch+1, save_interval):
+        for epoch in epochs:
             print(f"Epoch {epoch}")
             for it in range(in_epoch_saves + 1):
                     if it == in_epoch_saves:
-                        model, optimizer, train_loss, _ = load_checkpoint(fcon, epoch)
+                        model, optimizer, train_loss, _ = load_checkpoint(fcon, epoch, overwrite=True)
                         suffix = ''
                         it_lab = ''
                     elif epoch == 0 or epoch >= max_sub_epoch:
@@ -119,7 +134,7 @@ if __name__ == '__main__':
                         suffix = f'_iter{ind}'
                         it_lab = f', Iteration {ind}'
                     ftle_dict = torch.load(f'SMNIST/LEs/{fcon.name()}_e{epoch}{suffix}_FTLE.p')
-                    gradV_list, gradW_list, loss_list = torch.load(f'SMNIST/Grads/{fcon.name()}_e{epoch}{suffix}_grads.p')
+                    gradV_list, gradU_list, gradW_list, loss_list = torch.load(f'SMNIST/Grads/{fcon.name()}_e{epoch}{suffix}_grads.p')
                     pred_list = torch.load(f'SMNIST/Grads/{fcon.name()}_e{epoch}{suffix}_logits.p')
                     normalizer = colors.Normalize()
                     normalizer.autoscale(loss_list)
@@ -152,7 +167,7 @@ if __name__ == '__main__':
                                 s_list[i] = S
                                 v_list[i] = Vh
                             torch.save((u_list, s_list, v_list), f'SMNIST/Eigs/{fcon.name()}_e{epoch}{it_lab}_svds.p')
-                        
+                        epoch
                         # print(s_list.sum(dim = -1).shape)
                         s_norm = s_list/s_list.sum(dim = -1).unsqueeze(-1).repeat(1,1,s_list.shape[-1])
                         s_cum = s_norm.cumsum(dim = -1)
@@ -191,8 +206,7 @@ if __name__ == '__main__':
                         plt.title(f'Entropy vs. first {keep} Q angles, Epoch {epoch}{it_lab}')
                         # plt.show()
                         plt.savefig(f'SMNIST/Plots/e{epoch}/QAngles{suffix}.png', bbox_inches = 'tight', dpi = 400)
-                        
-                        
+
                     if entropy and svds:
                         keep = 1
                         # print(e_list[1:].unsqueeze(-1).repeat((1,1, keep)).shape)
@@ -204,8 +218,7 @@ if __name__ == '__main__':
                         plt.title(f'Entropy vs. first {keep} SV angles, Epoch {epoch}{it_lab}')
                         # plt.show()
                         plt.savefig(f'SMNIST/Plots/e{epoch}/SVDAngles{suffix}.png')
-                        
-                        
+
                     if svd_projections:
                         
                         fname = f'SMNIST/Eigs/{fcon.name()}_e{epoch}_projections.p'
@@ -225,99 +238,146 @@ if __name__ == '__main__':
                             torch.save((u_projs, v_projs), fname)
                                 
                         std_list = torch.zeros(seq_length, hidden_size)
-                        
-                        plt.figure()
+
                         normalizer = colors.Normalize()
                         normalizer.autoscale(range(seq_length))
-                        if svd_mode == 'First':
-                            sv_list = torch.arange(evs)
-                        if svd_mode == 'Last':
-                            sv_list = torch.arange(hidden_size-evs, hidden_size)
-                        std_list = torch.std(v_projs[:, :, :, sv_list], dim = (1,3))
-                        c_vals = torch.arange(seq_length).unsqueeze(1).repeat(1, hidden_size)
-                        x_vals = torch.arange(hidden_size).unsqueeze(0).repeat(seq_length, 1)
-                        torch.save(std_list, f'SMNIST/std_evs{evs}_{svd_mode}{evs}SingVals_e{epoch}.p')
-                        plt.scatter(x_vals, std_list, c = c_vals, norm = normalizer)
-                        plt.xlabel('Q Vector Index')
-                        plt.ylabel('St. Deviation')
-                        plt.title(f'Projection STDs, Epoch {epoch}{it_lab}, {svd_mode} {evs} Sing Vals')
-                        plt.colorbar(cm.ScalarMappable(norm = normalizer), label = 'Step No.')
-                        # plt.show()
-                        all_stds.append(std_list.mean(dim =0))
-                        plt.savefig(f'SMNIST/Plots/e{epoch}/p{p}_e{epoch}{suffix}_{svd_mode}{evs}_STDs.png', bbox_inches = 'tight', dpi = 400)
-                        
-                        if plot_proj:
-                            filenames = []
-                            for step in range(seq_length):
-                                if svd_mode == 'First':
-                                    sv_list = torch.arange(evs)
-                                if svd_mode == 'Last':
-                                    sv_list = torch.arange(hidden_size-evs, hidden_size)
-                                h_svd_full = torch.zeros((evs, 100))
-                                plt.figure()
-                                for i in sv_list:
-                                    if le_mode == 'First':
-                                        v_red = v_projs[step,:, :qs, i]
-                                    elif le_mode == 'Last':
-                                        v_red = v_projs[step,:, -qs:, i]
-                                    elif le_mode == 'Random':
-                                        v_red = v_projs[step,:, inds[:qs], i]
+                        for svd_mode in ['First', 'Last']:
+                            plt.figure()
+                            print(f'SV mode: {svd_mode}')
+                            if svd_mode == 'First':
+                                sv_list = torch.arange(evs)
+                            if svd_mode == 'Last':
+                                sv_list = torch.arange(hidden_size-evs, hidden_size)
+                            std_list = torch.std(v_projs[:, :, :, sv_list], dim = (1,3))
+                            rand_std = torch.std(v_projs[:, :, inds[:qs]][:,:,:,sv_list])
+                            print(f'Random St. Dev = {rand_std}')
+                            c_vals = torch.arange(seq_length).unsqueeze(1).repeat(1, hidden_size)
+                            x_vals = torch.arange(hidden_size).unsqueeze(0).repeat(seq_length, 1)
+                            plt.plot([1, hidden_size], [rand_std, rand_std], color='red')
+                            torch.save(std_list, f'SMNIST/svds/std_evs{evs}_{svd_mode}{evs}SingVals_e{epoch}.p')
+                            plt.scatter(x_vals, std_list, c = c_vals, norm = normalizer)
+                            plt.xlabel('Q Vector Index')
+                            plt.ylabel('St. Deviation')
+                            plt.title(f'Projection STDs, Epoch {epoch}{it_lab}, {svd_mode} {evs} Sing Vals')
+                            plt.colorbar(cm.ScalarMappable(norm = normalizer), label = 'Step No.')
+                            # plt.show()
+                            all_stds.append(std_list.mean(dim =0))
+                            plt.savefig(f'SMNIST/Plots/p{p}/p{p}_e{epoch}{suffix}_{svd_mode}{evs}_STDs.png', bbox_inches = 'tight', dpi = 400)
+
+                            if plot_proj:
+                                plot_steps = False
+                                for le_mode in ['First', 'Last', 'Random']:
+                                    print(f'LE Mode: {le_mode}')
+                                    hist_fname = f'SMNIST/Eigs/{fcon.name()}_e{epoch}_{le_mode}_{svd_mode}_hist.p'
+                                    proj_fname = f'SMNIST/Eigs/{fcon.name()}_e{epoch}_{le_mode}_{svd_mode}_stds.p'
+                                    # Generate Singular Vector Indices
+                                    if svd_mode == 'First':
+                                        sv_list = torch.arange(evs)
+                                    if svd_mode == 'Last':
+                                        sv_list = torch.arange(hidden_size - evs, hidden_size)
+                                    if svd_mode == 'Random':
+                                        sv_list = inds[:evs]
+
+                                    # Calculate Projections
+                                    if os.path.exists(proj_fname):
+                                        all_hist = torch.load(hist_fname)
+                                        stds = torch.load(proj_fname)
                                     else:
-                                        print(f'LE Mode {le_mode} not recognized')
-                                        break
-                                    std = torch.std(v_red)
-                                    h = torch.histc(v_red, min = -1, max = 1)
-                                    plt.bar(torch.linspace(-1,1,101)[:-1], h, bottom = h_svd_full.sum(dim=0), width = 0.02, label = i.item()+1)
-                                    h_svd_full[i] = h
-                                
-                                ymax = max(ymax, h_svd_full.sum(dim=0).max().item())
-                                plt.legend(title = 'Grad SV')
-                                plt.ylim([0,ymax])
-                                plt.ylabel('Count')
-                                plt.xlabel('Alignment')
-                                plt.title(f'Epoch {epoch}{it_lab}, Step {step} \n {svd_mode} {evs} Grad SVs, {le_mode} {qs} Q-vects, Std = {std:.4f}')
-                                filenames.append(f'SMNIST/Plots/e{epoch}/{fcon.name()}_e{epoch}{suffix}_step{step}_SVDAlignment_{le_mode}q{qs}_ev{evs}.png')
-                                plt.savefig(f'SMNIST/Plots/e{epoch}/{fcon.name()}_e{epoch}{suffix}_step{step}_SVDAlignment_{le_mode}q{qs}_ev{evs}.png', bbox_inches = 'tight', dpi = 400)
-                                plt.close()
-                            
-                            with imageio.get_writer(f'SMNIST/Plots/e{epoch}/SVDAlignment_p{p}_e{epoch}{suffix}_{le_mode}LEs_{svd_mode}SVs.gif', mode='I', fps = 4) as writer:
-                                for filename in filenames:
-                                    image = imageio.imread(filename)
-                                    writer.append_data(image)
-                            for filename in set(filenames):
-                                os.remove(filename)
-                            
-                    if svds and dims: 
-                        filenames = []
-                        # for step in range(seq_length):
-                            # plt.figure()
-                            # h = torch.histc(s_part_ratio[step,:], min = 0, max = 1, bins = 10)
-                            # plt.bar(torch.linspace(0, 1, 10), h, width = 0.1)
-                            # ymax = h.max().item()
-                            # plt.ylim([0,25])
-                            # plt.xlim([0, 1])
-                            # plt.ylabel('Count')
-                            # plt.xlabel('Partipation Ratio')
-                            # if epoch > 0:
-                                # loss_append = f'\n Training Loss = {train_loss[-1]:.3f}'
-                            # else:
-                                # loss_append = ''
-                            # plt.title(f'Epoch {epoch}{it_lab}, Step {step}{loss_append}')
-                            # fname = f'SMNIST/Plots/e{epoch}/{fcon.name()}_e{epoch}{suffix}_step{step}_svdDim.png'
-                            # filenames.append(fname)
-                            # plt.savefig(fname, bbox_inches = 'tight', dpi = 400)
-                            # plt.close()
-                        
-                        plt.figure()
-                        fname = f'SMNIST/Plots/e{epoch}/p{p}_e{epoch}{suffix}_svdRatio_mean.png'
-                        y= s_part_ratio.mean(dim = -1)
-                        err = s_part_ratio.std(dim = -1)
-                        plt.errorbar(torch.arange(1, seq_length+1), y, yerr=err, fmt='o')
-                        plt.title(f'Participation Ratio, Epoch {epoch}{it_lab}')
-                        plt.xlabel('Step No.')
-                        plt.ylabel('Partipation Ratio Mean')
-                        plt.ylim([0,1])
-                        plt.savefig(fname, bbox_inches = 'tight', dpi = 400)                     
+                                        stds = torch.zeros(seq_length, evs)
+                                        filenames = []
+                                        all_hist = []
+                                        for step in tqdm(range(seq_length)):
+                                            h_svd_full = torch.zeros((evs, 100))
+                                            if plot_steps:
+                                                plt.figure()
+                                            for idx, i in enumerate(sv_list):
+                                                if le_mode == 'First':
+                                                    v_red = v_projs[step,:, :qs, i]
+                                                elif le_mode == 'Last':
+                                                    v_red = v_projs[step,:, -qs:, i]
+                                                elif le_mode == 'Random':
+                                                    v_red = v_projs[step,:, inds[:qs], i]
+                                                else:
+                                                    print(f'LE Mode {le_mode} not recognized')
+                                                    break
+                                                std = torch.std(v_red)
+                                                stds[step, idx] = std
+                                                h = torch.histc(v_red, min = -1, max = 1)
+                                                if plot_steps:
+                                                    plt.bar(torch.linspace(-1,1,101)[:-1], h, bottom = h_svd_full.sum(dim=0), width = 0.02, label = i.item()+1)
+                                                h_svd_full[idx] = h
+                                            all_hist.append(h_svd_full)
+                                            if plot_steps:
+                                                ymax = max(ymax, h_svd_full.sum(dim=0).max().item())
+                                                plt.legend(title = 'Grad SV')
+                                                plt.ylim([0,ymax])
+                                                plt.ylabel('Count')
+                                                plt.xlabel('Alignment')
+                                                plt.title(f'Epoch {epoch}{it_lab}, Step {step} \n {svd_mode} {evs} Grad SVs, {le_mode} {qs} Q-vects, Std = {std:.4f}')
+                                                fname = f'SMNIST/Plots/p{p}/SVDAlignment_{le_mode}q{qs}_ev{evs}_e{epoch}{suffix}_step{step}.png'
+                                                filenames.append(fname)
+                                                plt.savefig(fname, bbox_inches='tight', dpi=400)
+                                                plt.close()
+                                    # with imageio.get_writer(f'SMNIST/Plots/p{p}/SVDAlignment_p{p}_e{epoch}{suffix}_{le_mode}LEs_{svd_mode}SVs.gif', mode='I', fps = 4) as writer:
+                                    #     for filename in filenames:
+                                    #         image = imageio.imread(filename)
+                                    #         writer.append_data(image)
+                                        for filename in set(filenames):
+                                            os.remove(filename)
+                                        all_hist = torch.stack(all_hist)
+                                        torch.save(all_hist, hist_fname)
+                                        torch.save(stds, proj_fname)
+
+                                    # Plot full histogram across all time steps
+
+                                    plt.figure(figsize = (4,2))
+                                    all_hist_plot = all_hist.sum(dim=0)
+                                    print(f'Mean Alignment std: {stds.mean()}')
+                                    for idx, i in enumerate(sv_list):
+                                        plt.bar(torch.linspace(-1, 1, 101)[:-1], all_hist_plot[idx],
+                                                bottom=all_hist_plot[:idx].sum(dim=0), width=0.02,
+                                                label=i.item() + 1)
+                                    plt.legend(title='Grad SV')
+                                    plt.ylim([0, all_hist_plot.sum(dim=-1).max()])
+                                    plt.ylabel('Count')
+                                    plt.xlabel('Alignment')
+                                    plt.title(
+                                        f'Epoch {epoch}{it_lab}, All Steps \n {svd_mode} {evs} Grad SVs, {le_mode} {qs} Q-vects, Std = {stds.mean():.4f}')
+                                    fname = f'SMNIST/Plots/p{p}/SVDAlignment_{le_mode}q{qs}_ev{evs}_{svd_mode}{evs}SVs_e{epoch}{suffix}_All_steps.png'
+                                    plt.savefig(fname, bbox_inches='tight', dpi=400)
+                                    plt.close()
+
+                        if svds and dims:
+                            filenames = []
+                            # for step in range(seq_length):
+                                # plt.figure()
+                                # h = torch.histc(s_part_ratio[step,:], min = 0, max = 1, bins = 10)
+                                # plt.bar(torch.linspace(0, 1, 10), h, width = 0.1)
+                                # ymax = h.max().item()
+                                # plt.ylim([0,25])
+                                # plt.xlim([0, 1])
+                                # plt.ylabel('Count')
+                                # plt.xlabel('Partipation Ratio')
+                                # if epoch > 0:
+                                    # loss_append = f'\n Training Loss = {train_loss[-1]:.3f}'
+                                # else:
+                                    # loss_append = ''
+                                # plt.title(f'Epoch {epoch}{it_lab}, Step {step}{loss_append}')
+                                # fname = f'SMNIST/Plots/e{epoch}/{fcon.name()}_e{epoch}{suffix}_step{step}_svdDim.png'
+                                # filenames.append(fname)
+                                # plt.savefig(fname, bbox_inches = 'tight', dpi = 400)
+                                # plt.close()
+
+                            plt.figure()
+                            fname = f'SMNIST/Plots/e{epoch}/p{p}_e{epoch}{suffix}_svdRatio_mean.png'
+                            y= s_part_ratio.mean(dim = -1)
+                            err = s_part_ratio.std(dim = -1)
+                            plt.errorbar(torch.arange(1, seq_length+1), y, yerr=err, fmt='o')
+                            plt.title(f'Participation Ratio, Epoch {epoch}{it_lab}')
+                            plt.xlabel('Step No.')
+                            plt.ylabel('Partipation Ratio Mean')
+                            plt.ylim([0,1])
+                            plt.savefig(fname, bbox_inches = 'tight', dpi = 400)
                     if ftle:
                         f_dim = torch.sum(ftles>-1, dim = -1).cpu()
                         # print(f_dim.shape)
@@ -473,23 +533,25 @@ if __name__ == '__main__':
             plt.ylabel('Pearson Coefficient')
             plt.title(f'Pearson, EV = {evs}, Q-vects = {qs}')
             plt.savefig(f'SMNIST/Plots/Pearson_ev{evs}_qs{qs}.png', bbox_inches=  'tight')
-            plt.show()
-        if svd_projections:
-            x1 = torch.linspace(1.0/in_epoch_saves, max_sub_epoch, (in_epoch_saves+2)*max_sub_epoch)
-            x2 = torch.arange(start = max_sub_epoch, end = max_epoch)
-            x = torch.cat((x1, x2))
-            x_vals = x.unsqueeze(0).repeat(hidden_size, 1)
-            normalizer = colors.Normalize()
-            normalizer.autoscale(range(max_epoch))
-            c_vals = x.unsqueeze(1).repeat(1, hidden_size)
-            print(x.shape)
-            b = torch.Tensor(x.shape[0], hidden_size)
-            torch.cat(all_stds, out=b)
-            plt.scatter(x, b, c= c_vals, norm = normalizer2)
-            plt.xticks(torch.arange(1, max_epoch+1))
-            plt.legend()
-            plt.xlabel('Training Epoch')
-            plt.show()
+            # plt.show()
+        # if svd_projections:
+        #     plt.figure()
+        #     x1 = torch.linspace(1.0/in_epoch_saves, max_sub_epoch, (in_epoch_saves+2)*max_sub_epoch)
+        #     x2 = torch.arange(start = max_sub_epoch, end = max_epoch+1)
+        #     x = torch.cat((x1, x2))
+        #     x_vals = x.unsqueeze(0).repeat(hidden_size, 1)
+        #     normalizer = colors.Normalize()
+        #     normalizer.autoscale(range(max_epoch))
+        #     c_vals = x.unsqueeze(1).repeat(1, hidden_size)
+        #     # print(x.shape)
+        #     b = torch.Tensor(x.shape[0], hidden_size)
+        #     torch.vstack(all_stds, out=b)
+        #     plt.scatter(x.unsqueeze(1).repeat((1, hidden_size)), b, c= c_vals, norm = normalizer2)
+        #     plt.xticks(torch.arange(1, max_epoch+1))
+        #     plt.legend()
+        #     plt.xlabel('Training Epoch')
+        #     plt.savefig(f'SMNIST/Plots/p{p}/STDs.png', bbox_inches=  'tight')
+        #     # plt.show()
             
             
         if train_loss_plot:
